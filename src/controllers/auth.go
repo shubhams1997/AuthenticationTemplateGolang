@@ -25,14 +25,18 @@ func Login(c *fiber.Ctx) error {
 	}
 	var user models.User
 	result := storage.DB.Where("phone_number = ?", body.PhoneNumber).First(&user)
+	if result.Error != nil {
+		return helper.HandleFiberError(result.Error, "Invalid Credentials", c, http.StatusNotFound)
+	}
+
+	// check if password is correct
+	if err := helper.CheckPassword(body.Password, user.Password, user.Salt); err != nil {
+		return helper.HandleFiberError(err, "Invalid Credentials", c, http.StatusNotFound)
+	}
 
 	user.LastLogin = time.Now().UTC()
 	user.IsActive = true
 	storage.DB.Save(&user)
-
-	if result.Error != nil {
-		return helper.HandleFiberError(result.Error, "Invalid Credentials", c, http.StatusNotFound)
-	}
 
 	token := jwt.New(jwt.SigningMethodHS256)
 	claims := token.Claims.(jwt.MapClaims)
@@ -55,13 +59,8 @@ func Login(c *fiber.Ctx) error {
 	})
 
 	return c.Status(http.StatusOK).JSON(&fiber.Map{
-		"token": t,
-		"user": models.User{
-			ID:          user.ID,
-			Name:        user.Name,
-			PhoneNumber: user.PhoneNumber,
-			Coins:       user.Coins,
-		},
+		"token":   t,
+		"user":    models.UserResponse{User: user},
 		"message": "Login successful",
 		"success": true,
 	})
@@ -73,7 +72,15 @@ func Register(c *fiber.Ctx) error {
 	if err := c.BodyParser(&user); err != nil {
 		return err
 	}
+	// hash password and salt
+	user.Salt = helper.GenerateRandomString()
+	HashedPassword, err := helper.HashPassword(user.Password, user.Salt)
+	if err != nil {
+		return helper.HandleFiberError(err, "Error hashing password", c, http.StatusBadRequest)
+	}
+	user.Password = HashedPassword
 	user.IsActive = true
+
 	result := storage.DB.Create(&user)
 	if result.Error != nil {
 		if strings.Contains(result.Error.Error(), "duplicate") {
